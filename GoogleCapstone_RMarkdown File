@@ -1,0 +1,498 @@
+---
+title: "Simple Dissertation Replication"
+author: "Tomi Okusanya"
+date: "2024-10-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+install.packages("rmarkdown")
+install.packages("tidyverse")
+install.packages("janitor")
+install.packages("here")
+install.packages("dplyr")
+install.packages("skimr")
+install.packages("DBI")
+install.packages("bigrquery")
+```
+
+## Introduction
+
+This is a simple R project, I (Tomi Okusanya), have made. It is replication of my economics dissertation topic, concerned with the interaction between an individual's closeness to one's home nation and their willingness to cheat tax. My dissertation (and subsequently this replication) was inspired by Sherry Xin Li's 2010 paper "Social Identities, Ethnic Diversity, and Tax Morale" (available in the volume 38 of the Public Finance Review").
+
+The data used in this project is from the World Bank and the World Values Survey dataset.
+
+
+## Importing WVS data from Google Cloud
+
+For this simple analysis, I have used the WVS Cross National Wave 7 data (completed from 2020 to 2023).
+
+For the sake of simplicity and also to a brief review of the SQL content, I decided to use BigQuery to query out the questions I interested in, specifically; willingess to cheat tax (our independent variable; TaxCheat), Country identifiers (Country Code), sex, age, income (self-reported income), and citizenship (only individuals who have stated they are citizens)
+
+Other controls can include demographic location (urban or rural), criminal status, marital status, etc; for the sake of simplicity, this has been conducted omitting these demographic identifiers. 
+
+```{r import_and_review, echo=FALSE}
+library(skimr)
+library(readr)
+library(bigrquery)
+library(tidyverse)
+skim_without_charts(world_bank_pop)
+
+API_SM_POP_REFG_DS2_en_csv_v2_3430760 <- read_csv("API_SM.POP.REFG_DS2_en_csv_v2_3430760.csv", 
+                                                  skip = 3)
+
+world_bank_ref <- API_SM_POP_REFG_DS2_en_csv_v2_3430760
+
+skim_without_charts(world_bank_ref)
+head(world_bank_ref)
+write_csv(world_bank_ref, "world_bank_ref.csv")
+
+library(readr)
+API_SM_POP_TOTL_DS2_en_csv_v2_3430868 <- read_csv("API_SM.POP.TOTL_DS2_en_csv_v2_3430868.csv", 
+                                                  skip = 3)
+
+world_bank_migrant <- API_SM_POP_TOTL_DS2_en_csv_v2_3430868 
+
+skim_without_charts(world_bank_migrant)
+head(world_bank_migrant)
+write_csv(world_bank_migrant, "world_bank_migrant.csv")
+
+
+#loading in DBI (Database Interface) library
+library(DBI)
+library(bigrquery)
+library(readr)
+con <- dbConnect(
+  bigrquery::bigquery(),
+  project = "dissertation-replication",
+  dataset = "Survey")
+dbListTables(con)
+
+library(tidyverse)
+library(dplyr)
+library(skimr)
+
+wvs_summary <- tbl(con, "TableQuery") %>% collect()
+ 
+dbDisconnect(con)
+
+skim_without_charts(wvs_summary)
+head(wvs_summary)
+write_csv(wvs_summary, "wvs_summary.csv")
+```
+
+## Merging WVS Data with World Bank Data
+
+For this simple analysis, I used Word Bank Demographic Data; for immigration data I used stats from 2017 for completeness; for asylum statistics, I used stats from 2015 for completeness. 
+
+Whilst this analysis may have been more valid using stats from 2020-2023, the change in most nation's populations would not have been particularly drastic between 2015 to 2023.
+
+```{r Merge and Clean, echo=FALSE}
+library(dplyr)
+library(tidyverse)
+
+read_csv("wvs_summary.csv")
+
+head(wvs_summary)
+wvs_summary <- rename(wvs_summary, "Country Code" = B_COUNTRY_ALPHA)
+head(wvs_summary)
+
+write_csv(world_bank_pop, "world_bank_pop_diss.csv")
+world_bank_pop_diss <- read_csv("world_bank_pop_diss.csv") 
+head(world_bank_pop_diss)
+world_bank_pop_diss <- filter(world_bank_pop_diss, indicator == "SP.URB.TOTL")
+head(world_bank_pop_diss)
+world_bank_pop_diss <- select(world_bank_pop_diss, country,'2017')
+head(world_bank_pop_diss)
+world_bank_pop_diss <- rename(world_bank_pop_diss, "Country Code" = country, "2010sPop" = '2017')
+head(world_bank_pop_diss)
+
+##merging demographic data
+
+
+world_bank_ref <- read_csv("world_bank_ref.csv")
+world_bank_migrant <- read_csv("world_bank_migrant.csv")
+
+head(world_bank_ref)
+skim_without_charts(world_bank_ref)
+names(world_bank_ref)
+names(world_bank_migrant)
+
+world_bank_ref <- rename(world_bank_ref, "2010sRef" = "2015")
+world_bank_migrant <- rename(world_bank_migrant, "2010sMig" = "2015")
+
+head(world_bank_migrant)
+head(world_bank_ref)
+
+world_bank_ref <- select(world_bank_ref, `2010sRef`, `Country Code`)
+world_bank_migrant <- select(world_bank_migrant, `2010sMig`, `Country Code`)
+
+head(world_bank_migrant)
+head(world_bank_ref)
+head(world_bank_pop_diss)
+
+world_bank_xeno <- inner_join(world_bank_migrant, world_bank_ref, by = "Country Code")
+head(world_bank_xeno)
+
+world_bank_demo <- inner_join(world_bank_xeno, world_bank_pop_diss, by = "Country Code")
+head(world_bank_demo)
+
+world_bank_demo <- mutate(world_bank_demo,`2010sRefRatio` = `2010sRef`/`2010sPop`)
+world_bank_demo <- mutate(world_bank_demo,`2010sMigRatio` = `2010sMig`/`2010sPop`)
+world_bank_demo <- mutate(world_bank_demo,`10-FoldRefImpact` = log10(`2010sRefRatio`))
+world_bank_demo <- mutate(world_bank_demo,`10-FoldMigImpact` = log10(`2010sMigRatio`))
+world_bank_demo <- mutate(world_bank_demo, BlankCheck = `2010sRefRatio` + `2010sMigRatio`)
+
+skim_without_charts(world_bank_demo)
+glimpse(world_bank_demo)
+
+world_bank_demo_clean <- filter(world_bank_demo, BlankCheck != "")
+head(world_bank_demo_clean)
+world_bank_demo_clean <- mutate(world_bank_demo_clean, id=row_number())
+write_csv(world_bank_demo_clean, "world_bank_demo.csv")
+
+glimpse(wvs_summary)
+glimpse(world_bank_demo_clean)
+
+worldbank_wvs <- left_join(world_bank_demo, wvs_summary, by = "Country Code")
+worldbank_wvs <- mutate(worldbank_wvs, id=row_number())
+worldbank_wvs <- mutate(worldbank_wvs,immi_x_Close= Closeness * `2010sRefRatio` )
+worldbank_wvs <- mutate(worldbank_wvs, ref_x_Close= Closeness * `2010sMigRatio`)
+worldbank_wvs <- drop_na(worldbank_wvs)
+glimpse(worldbank_wvs)
+
+write_csv(worldbank_wvs, "worldbank_wvs.csv")
+
+```
+
+#Summary visuals
+
+```{r Visualisation section, echo=FALSE}
+install.packages("ggplot2")
+install.packages("scales")
+
+library(ggplot2)
+library(scales)
+
+world_bank_demo <- read_csv("world_bank_demo.csv")
+world_bank_demo_plot <- ggplot(data = world_bank_demo, mapping = 
+                                 aes(`2010sPop`, `2010sMig`)) + geom_point(size = 1, colour = "blue") + 
+  scale_y_continuous(labels = comma) + 
+  scale_x_continuous(labels = comma) +
+  geom_smooth(method = "lm", color = "red", se = FALSE)
+world_bank_demo_plot2 <- ggplot(data= world_bank_demo, mapping = 
+                                  aes(`2010sPop`,`2010sRef`)) + geom_point(size = 1, colour = "green")  + 
+  scale_y_continuous(labels = comma) + 
+  scale_x_continuous(labels = comma) +
+  geom_smooth(method = "lm", color = "red", se = FALSE)
+
+print(world_bank_demo_plot)
+print(world_bank_demo_plot2)
+
+wvs_summary <- read_csv("wvs_summary.csv")
+wvs_summary <- rename(wvs_summary, "Country Code" = B_COUNTRY_ALPHA)
+summarize(wvs_summary)
+
+RUS_surveyData <- filter(wvs_summary, 'Country Code' == "RUS")
+RUS_surveyData_ClosePlot <- ggplot(data = RUS_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+RUS_surveyData_TaxPlot <- ggplot(data = RUS_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(RUS_surveyData_ClosePlot)
+print(RUS_surveyData_TaxPlot)
+UZB_surveyData <- filter(wvs_summary, 'Country Code' == "UZB")
+UZB_surveyData_ClosePlot <- ggplot(data = UZB_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+UZB_surveyData_TaxPlot <- ggplot(data = UZB_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(UZB_surveyData_ClosePlot)
+print(UZB_surveyData_TaxPlot)
+LBY_surveyData <- filter(wvs_summary, 'Country Code' == "LBY")
+LBY_surveyData_ClosePlot <- ggplot(data = LBY_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+LBY_surveyData_TaxPlot <- ggplot(data = LBY_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(LBY_surveyData_ClosePlot)
+print(LBY_surveyData_TaxPlot)
+MNG_surveyData <- filter(wvs_summary, 'Country Code' == "MNG")
+MNG_surveyData_ClosePlot <- ggplot(data = MNG_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+MNG_surveyData_TaxPlot <- ggplot(data = MNG_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(MNG_surveyData_ClosePlot)
+print(MNG_surveyData_TaxPlot)
+NGA_surveyData <- filter(wvs_summary, 'Country Code' == "NGA")
+NGA_surveyData_ClosePlot <- ggplot(data = NGA_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+NGA_surveyData_TaxPlot <- ggplot(data = NGA_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(NGA_surveyData_ClosePlot)
+print(NGA_surveyData_TaxPlot)
+NIC_surveyData <- filter(wvs_summary, 'Country Code' == "NIC")
+NIC_surveyData_ClosePlot <- ggplot(data = NIC_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+NIC_surveyData_TaxPlot <- ggplot(data = NIC_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(NIC_surveyData_ClosePlot)
+print(NIC_surveyData_TaxPlot)
+TUN_surveyData <- filter(wvs_summary, 'Country Code' == "TUN")
+TUN_surveyData_ClosePlot <- ggplot(data = TUN_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+TUN_surveyData_TaxPlot <- ggplot(data = TUN_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(TUN_surveyData_ClosePlot)
+print(TUN_surveyData_TaxPlot)
+VEN_surveyData <- filter(wvs_summary, 'Country Code' == "VEN")
+VEN_surveyData_ClosePlot <- ggplot(data = VEN_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+VEN_surveyData_TaxPlot <- ggplot(data = VEN_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(VEN_surveyData_ClosePlot)
+print(VEN_surveyData_TaxPlot)
+ARM_surveyData <- filter(wvs_summary, 'Country Code' == "ARM")
+ARM_surveyData_ClosePlot <- ggplot(data = ARM_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+ARM_surveyData_TaxPlot <- ggplot(data = ARM_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(ARM_surveyData_ClosePlot)
+print(ARM_surveyData_TaxPlot)
+CAN_surveyData <- filter(wvs_summary, 'Country Code' == "CAN")
+CAN_surveyData_ClosePlot <- ggplot(data = CAN_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+CAN_surveyData_TaxPlot <- ggplot(data = CAN_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(CAN_surveyData_ClosePlot)
+print(CAN_surveyData_TaxPlot)
+JOR_surveyData <- filter(wvs_summary, 'Country Code' == "JOR")
+JOR_surveyData_ClosePlot <- ggplot(data = JOR_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+JOR_surveyData_TaxPlot <- ggplot(data = JOR_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(JOR_surveyData_ClosePlot)
+print(JOR_surveyData_TaxPlot)
+COL_surveyData <- filter(wvs_summary, 'Country Code' == "COL")
+COL_surveyData_ClosePlot <- ggplot(data = COL_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+COL_surveyData_TaxPlot <- ggplot(data = COL_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(COL_surveyData_ClosePlot)
+print(COL_surveyData_TaxPlot)
+SRB_surveyData <- filter(wvs_summary, 'Country Code' == "SRB")
+SRB_surveyData_ClosePlot <- ggplot(data = SRB_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+SRB_surveyData_TaxPlot <- ggplot(data = SRB_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(SRB_surveyData_ClosePlot)
+print(SRB_surveyData_TaxPlot)
+URY_surveyData <- filter(wvs_summary, 'Country Code' == "URY")
+URY_surveyData_ClosePlot <- ggplot(data = URY_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+URY_surveyData_TaxPlot <- ggplot(data = URY_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(URY_surveyData_ClosePlot)
+print(URY_surveyData_TaxPlot)
+JPN_surveyData <- filter(wvs_summary, 'Country Code' == "JPN")
+JPN_surveyData_ClosePlot <- ggplot(data = JPN_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+JPN_surveyData_TaxPlot <- ggplot(data = JPN_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(JPN_surveyData_ClosePlot)
+print(JPN_surveyData_TaxPlot)
+IDN_surveyData <- filter(wvs_summary, 'Country Code' == "IDN")
+IDN_surveyData_ClosePlot <- ggplot(data = IDN_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+IDN_surveyData_TaxPlot <- ggplot(data = IDN_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(IDN_surveyData_ClosePlot)
+print(IDN_surveyData_TaxPlot)
+BOL_surveyData <- filter(wvs_summary, 'Country Code' == "BOL")
+BOL_surveyData_ClosePlot <- ggplot(data = BOL_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+BOL_surveyData_TaxPlot <- ggplot(data = BOL_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(BOL_surveyData_ClosePlot)
+print(BOL_surveyData_TaxPlot)
+PHL_surveyData <- filter(wvs_summary, 'Country Code' == "PHL")
+PHL_surveyData_ClosePlot <- ggplot(data = PHL_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+PHL_surveyData_TaxPlot <- ggplot(data = PHL_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(PHL_surveyData_ClosePlot)
+print(PHL_surveyData_TaxPlot)
+MEX_surveyData <- filter(wvs_summary, 'Country Code' == "MEX")
+MEX_surveyData_ClosePlot <- ggplot(data = MEX_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+MEX_surveyData_TaxPlot <- ggplot(data = MEX_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(MEX_surveyData_ClosePlot)
+print(MEX_surveyData_TaxPlot)
+PRI_surveyData <- filter(wvs_summary, 'Country Code' == "PRI")
+PRI_surveyData_ClosePlot <- ggplot(data = PRI_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+PRI_surveyData_TaxPlot <- ggplot(data = PRI_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(PRI_surveyData_ClosePlot)
+print(PRI_surveyData_TaxPlot)
+IND_surveyData <- filter(wvs_summary, 'Country Code' == "IND")
+IND_surveyData_ClosePlot <- ggplot(data = IND_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+IND_surveyData_TaxPlot <- ggplot(data = IND_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(IND_surveyData_ClosePlot)
+print(IND_surveyData_TaxPlot)
+KEN_surveyData <- filter(wvs_summary, 'Country Code' == "KEN")
+KEN_surveyData_ClosePlot <- ggplot(data = KEN_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+KEN_surveyData_TaxPlot <- ggplot(data = KEN_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(KEN_surveyData_ClosePlot)
+print(KEN_surveyData_TaxPlot)
+BGD_surveyData <- filter(wvs_summary, 'Country Code' == "BGD")
+BGD_surveyData_ClosePlot <- ggplot(data = BGD_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+BGD_surveyData_TaxPlot <- ggplot(data = BGD_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(BGD_surveyData_ClosePlot)
+print(BGD_surveyData_TaxPlot)
+GTM_surveyData <- filter(wvs_summary, 'Country Code' == "GTM")
+GTM_surveyData_ClosePlot <- ggplot(data = GTM_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+GTM_surveyData_TaxPlot <- ggplot(data = GTM_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(GTM_surveyData_ClosePlot)
+print(GTM_surveyData_TaxPlot)
+KAZ_surveyData <- filter(wvs_summary, 'Country Code' == "KAZ")
+KAZ_surveyData_ClosePlot <- ggplot(data = KAZ_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+KAZ_surveyData_TaxPlot <- ggplot(data = KAZ_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(KAZ_surveyData_ClosePlot)
+print(KAZ_surveyData_TaxPlot)
+LBN_surveyData <- filter(wvs_summary, 'Country Code' == "LBN")
+LBN_surveyData_ClosePlot <- ggplot(data = LBN_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+LBN_surveyData_TaxPlot <- ggplot(data = LBN_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(LBN_surveyData_ClosePlot)
+print(LBN_surveyData_TaxPlot)
+MYS_surveyData <- filter(wvs_summary, 'Country Code' == "MYS")
+MYS_surveyData_ClosePlot <- ggplot(data = MYS_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+MYS_surveyData_TaxPlot <- ggplot(data = MYS_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(MYS_surveyData_ClosePlot)
+print(MYS_surveyData_TaxPlot)
+KGZ_surveyData <- filter(wvs_summary, 'Country Code' == "KGZ")
+KGZ_surveyData_ClosePlot <- ggplot(data = KGZ_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+KGZ_surveyData_TaxPlot <- ggplot(data = KGZ_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(KGZ_surveyData_ClosePlot)
+print(KGZ_surveyData_TaxPlot)
+TUR_surveyData <- filter(wvs_summary, 'Country Code' == "TUR")
+TUR_surveyData_ClosePlot <- ggplot(data = TUR_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+TUR_surveyData_TaxPlot <- ggplot(data = TUR_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(TUR_surveyData_ClosePlot)
+print(TUR_surveyData_TaxPlot)
+SVK_surveyData <- filter(wvs_summary, 'Country Code' == "SVK")
+SVK_surveyData_ClosePlot <- ggplot(data = SVK_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+SVK_surveyData_TaxPlot <- ggplot(data = SVK_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(SVK_surveyData_ClosePlot)
+print(SVK_surveyData_TaxPlot)
+TJK_surveyData <- filter(wvs_summary, 'Country Code' == "TJK")
+TJK_surveyData_ClosePlot <- ggplot(data = TJK_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+TJK_surveyData_TaxPlot <- ggplot(data = TJK_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(TJK_surveyData_ClosePlot)
+print(TJK_surveyData_TaxPlot)
+ECU_surveyData <- filter(wvs_summary, 'Country Code' == "ECU")
+ECU_surveyData_ClosePlot <- ggplot(data = ECU_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+ECU_surveyData_TaxPlot <- ggplot(data = ECU_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(ECU_surveyData_ClosePlot)
+print(ECU_surveyData_TaxPlot)
+ROU_surveyData <- filter(wvs_summary, 'Country Code' == "ROU")
+ROU_surveyData_ClosePlot <- ggplot(data = ROU_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+ROU_surveyData_TaxPlot <- ggplot(data = ROU_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(ROU_surveyData_ClosePlot)
+print(ROU_surveyData_TaxPlot)
+PER_surveyData <- filter(wvs_summary, 'Country Code' == "PER")
+PER_surveyData_ClosePlot <- ggplot(data = PER_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+PER_surveyData_TaxPlot <- ggplot(data = PER_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(PER_surveyData_ClosePlot)
+print(PER_surveyData_TaxPlot)
+ZWE_surveyData <- filter(wvs_summary, 'Country Code' == "ZWE")
+ZWE_surveyData_ClosePlot <- ggplot(data = ZWE_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+ZWE_surveyData_TaxPlot <- ggplot(data = ZWE_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(ZWE_surveyData_ClosePlot)
+print(ZWE_surveyData_TaxPlot)
+ETH_surveyData <- filter(wvs_summary, 'Country Code' == "ETH")
+ETH_surveyData_ClosePlot <- ggplot(data = ETH_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+ETH_surveyData_TaxPlot <- ggplot(data = ETH_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(ETH_surveyData_ClosePlot)
+print(ETH_surveyData_TaxPlot)
+AND_surveyData <- filter(wvs_summary, 'Country Code' == "AND")
+AND_surveyData_ClosePlot <- ggplot(data = AND_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+AND_surveyData_TaxPlot <- ggplot(data = AND_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(AND_surveyData_ClosePlot)
+print(AND_surveyData_TaxPlot)
+IRN_surveyData <- filter(wvs_summary, 'Country Code' == "IRN")
+IRN_surveyData_ClosePlot <- ggplot(data = IRN_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+IRN_surveyData_TaxPlot <- ggplot(data = IRN_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(IRN_surveyData_ClosePlot)
+print(IRN_surveyData_TaxPlot)
+MMR_surveyData <- filter(wvs_summary, 'Country Code' == "MMR")
+MMR_surveyData_ClosePlot <- ggplot(data = MMR_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+MMR_surveyData_TaxPlot <- ggplot(data = MMR_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(MMR_surveyData_ClosePlot)
+print(MMR_surveyData_TaxPlot)
+GRC_surveyData <- filter(wvs_summary, 'Country Code' == "GRC")
+GRC_surveyData_ClosePlot <- ggplot(data = GRC_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+GRC_surveyData_TaxPlot <- ggplot(data = GRC_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(GRC_surveyData_ClosePlot)
+print(GRC_surveyData_TaxPlot)
+DEU_surveyData <- filter(wvs_summary, 'Country Code' == "DEU")
+DEU_surveyData_ClosePlot <- ggplot(data = DEU_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+DEU_surveyData_TaxPlot <- ggplot(data = DEU_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(DEU_surveyData_ClosePlot)
+print(DEU_surveyData_TaxPlot)
+NLD_surveyData <- filter(wvs_summary, 'Country Code' == "NLD")
+NLD_surveyData_ClosePlot <- ggplot(data = NLD_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+NLD_surveyData_TaxPlot <- ggplot(data = NLD_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(NLD_surveyData_ClosePlot)
+print(NLD_surveyData_TaxPlot)
+USA_surveyData <- filter(wvs_summary, 'Country Code' == "USA")
+USA_surveyData_ClosePlot <- ggplot(data = USA_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+USA_surveyData_TaxPlot <- ggplot(data = USA_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(USA_surveyData_ClosePlot)
+print(USA_surveyData_TaxPlot)
+CYP_surveyData <- filter(wvs_summary, 'Country Code' == "CYP")
+CYP_surveyData_ClosePlot <- ggplot(data = CYP_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+CYP_surveyData_TaxPlot <- ggplot(data = CYP_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(CYP_surveyData_ClosePlot)
+print(CYP_surveyData_TaxPlot)
+HKG_surveyData <- filter(wvs_summary, 'Country Code' == "HKG")
+HKG_surveyData_ClosePlot <- ggplot(data = HKG_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+HKG_surveyData_TaxPlot <- ggplot(data = HKG_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(HKG_surveyData_ClosePlot)
+print(HKG_surveyData_TaxPlot)
+MDV_surveyData <- filter(wvs_summary, 'Country Code' == "MDV")
+MDV_surveyData_ClosePlot <- ggplot(data = MDV_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+MDV_surveyData_TaxPlot <- ggplot(data = MDV_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(MDV_surveyData_ClosePlot)
+print(MDV_surveyData_TaxPlot)
+TWN_surveyData <- filter(wvs_summary, 'Country Code' == "TWN")
+TWN_surveyData_ClosePlot <- ggplot(data = TWN_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+TWN_surveyData_TaxPlot <- ggplot(data = TWN_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(TWN_surveyData_ClosePlot)
+print(TWN_surveyData_TaxPlot)
+NZL_surveyData <- filter(wvs_summary, 'Country Code' == "NZL")
+NZL_surveyData_ClosePlot <- ggplot(data = NZL_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+NZL_surveyData_TaxPlot <- ggplot(data = NZL_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(NZL_surveyData_ClosePlot)
+print(NZL_surveyData_TaxPlot)
+UKR_surveyData <- filter(wvs_summary, 'Country Code' == "UKR")
+UKR_surveyData_ClosePlot <- ggplot(data = UKR_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+UKR_surveyData_TaxPlot <- ggplot(data = UKR_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(UKR_surveyData_ClosePlot)
+print(UKR_surveyData_TaxPlot)
+CZE_surveyData <- filter(wvs_summary, 'Country Code' == "CZE")
+CZE_surveyData_ClosePlot <- ggplot(data = CZE_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+CZE_surveyData_TaxPlot <- ggplot(data = CZE_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(CZE_surveyData_ClosePlot)
+print(CZE_surveyData_TaxPlot)
+MAR_surveyData <- filter(wvs_summary, 'Country Code' == "MAR")
+MAR_surveyData_ClosePlot <- ggplot(data = MAR_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+MAR_surveyData_TaxPlot <- ggplot(data = MAR_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(MAR_surveyData_ClosePlot)
+print(MAR_surveyData_TaxPlot)
+THA_surveyData <- filter(wvs_summary, 'Country Code' == "THA")
+THA_surveyData_ClosePlot <- ggplot(data = THA_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+THA_surveyData_TaxPlot <- ggplot(data = THA_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(THA_surveyData_ClosePlot)
+print(THA_surveyData_TaxPlot)
+VNM_surveyData <- filter(wvs_summary, 'Country Code' == "VNM")
+VNM_surveyData_ClosePlot <- ggplot(data = VNM_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+VNM_surveyData_TaxPlot <- ggplot(data = VNM_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(VNM_surveyData_ClosePlot)
+print(VNM_surveyData_TaxPlot)
+EGY_surveyData <- filter(wvs_summary, 'Country Code' == "EGY")
+EGY_surveyData_ClosePlot <- ggplot(data = EGY_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+EGY_surveyData_TaxPlot <- ggplot(data = EGY_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(EGY_surveyData_ClosePlot)
+print(EGY_surveyData_TaxPlot)
+ARG_surveyData <- filter(wvs_summary, 'Country Code' == "ARG")
+ARG_surveyData_ClosePlot <- ggplot(data = ARG_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+ARG_surveyData_TaxPlot <- ggplot(data = ARG_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(ARG_surveyData_ClosePlot)
+print(ARG_surveyData_TaxPlot)
+BRA_surveyData <- filter(wvs_summary, 'Country Code' == "BRA")
+BRA_surveyData_ClosePlot <- ggplot(data = BRA_surveyData, mapping = aes(x = Closeness)) + geom_bar()
+BRA_surveyData_TaxPlot <- ggplot(data = BRA_surveyData, mapping = aes(x = TaxCheat)) + geom_bar()
+print(BRA_surveyData_ClosePlot)
+print(BRA_surveyData_TaxPlot)
+```
+
+
+```{r Linear Output Regression}
+worldbank_wvs <- read_csv("worldbank_wvs.csv")
+
+worldbank_wvs <- mutate(worldbank_wvs, AlwaysCheat = ifelse(TaxCheat > 9, 1, 0))
+skim_without_charts(worldbank_wvs)
+
+TaxCheat_Mig_NoControl <- lm(AlwaysCheat ~ immi_x_Close + `Country Code`, data = worldbank_wvs)
+summary(TaxCheat_Mig_NoControl)
+
+TaxCheat_Mig_DemoControls <- lm(AlwaysCheat ~ immi_x_Close + `Country Code` + Sex + IncomePer, data = worldbank_wvs)
+summary(TaxCheat_Mig_DemoControls)
+
+TaxCheat_Ref_NoControl <- lm(AlwaysCheat ~ ref_x_Close + id, data = worldbank_wvs)
+summary(TaxCheat_Ref_NoControl)
+
+TaxCheat_Ref_DemoControls <- lm(AlwaysCheat ~ ref_x_Close + `Country Code` + Sex + IncomePer, data = worldbank_wvs)
+summary(TaxCheat_Ref_DemoControls)
+
+```
